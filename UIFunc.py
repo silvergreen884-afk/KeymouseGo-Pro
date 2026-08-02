@@ -400,7 +400,12 @@ class UIFunc(QMainWindow, Ui_UIView, QtStyleTools):
             _app = QApplication.instance()
             _app.installTranslator(self.trans)
             self.retranslateUi(self)
+            
         self.retranslateUi(self)
+        
+        self.setWindowTitle(
+            f"{APP_NAME} v{APP_VERSION}"
+        )
 
     def onchangetheme(self):
         theme = self.choice_theme.currentText()
