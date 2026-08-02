@@ -5,6 +5,7 @@ KeymouseGo Pro - Task Queue UI (UI-only first step)
 This module only defines the task queue window.
 It does not yet execute scripts or modify the original KeymouseGo behavior.
 """
+import json
 
 from pathlib import Path
 from PySide6.QtCore import Qt
@@ -26,6 +27,7 @@ from PySide6.QtWidgets import (
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
+    QMessageBox,
 )
 
 
@@ -222,8 +224,8 @@ class TaskQueueDialog(QDialog):
         )
 
         # UI-only placeholders. Real save/load/run logic will be added later.
-        self.save_button.clicked.connect(self._choose_save_path)
-        self.load_button.clicked.connect(self._choose_load_path)
+        self.save_button.clicked.connect(self._save_config)
+        self.load_button.clicked.connect(self._load_config)
 
     def _choose_scripts(self):
         paths, _ = QFileDialog.getOpenFileNames(
@@ -431,27 +433,184 @@ class TaskQueueDialog(QDialog):
     def _on_round_wait_type_changed(self, wait_type):
         self.round_wait_max_spinbox.setEnabled(wait_type == "随机")
 
-    def _choose_save_path(self):
+    def _get_config_data(self):
+        """Collect the current task queue settings into a serializable dict."""
+        tasks = []
+
+        for row in range(self.table.rowCount()):
+            tasks.append(self._read_row(row))
+
+        return {
+            "format": "KeymouseGo Pro Task Queue",
+            "version": 1,
+            "loop": {
+                "infinite": self.infinite_loop_checkbox.isChecked(),
+                "count": self.loop_count_spinbox.value(),
+            },
+            "round_wait": {
+                "type": self.round_wait_type_combo.currentText(),
+                "min": self.round_wait_min_spinbox.value(),
+                "max": self.round_wait_max_spinbox.value(),
+            },
+            "tasks": tasks,
+        }
+
+    def _save_config(self):
         path, _ = QFileDialog.getSaveFileName(
             self,
-            "选择任务配置保存位置（当前步骤尚不真正写入）",
+            "保存任务配置",
             "task_queue.json",
             "JSON 文件 (*.json)",
         )
-        if path:
-            self.config_path_edit.setText(path)
-            self.status_label.setText("状态：已选择保存路径（尚未写入）")
 
-    def _choose_load_path(self):
+        if not path:
+            return
+
+        if not path.lower().endswith(".json"):
+            path += ".json"
+
+        try:
+            config_data = self._get_config_data()
+
+            Path(path).write_text(
+                json.dumps(
+                    config_data,
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+
+            self.config_path_edit.setText(path)
+            self.status_label.setText("状态：任务配置已保存")
+
+            QMessageBox.information(
+                self,
+                "保存成功",
+                "任务配置已成功保存。",
+            )
+
+        except (OSError, TypeError, ValueError) as exc:
+            QMessageBox.critical(
+                self,
+                "保存失败",
+                f"无法保存任务配置：\n\n{exc}",
+            )
+
+    def _load_config(self):
         path, _ = QFileDialog.getOpenFileName(
             self,
-            "选择任务配置（当前步骤尚不真正读取）",
+            "载入任务配置",
             "",
             "JSON 文件 (*.json);;所有文件 (*.*)",
         )
-        if path:
+
+        if not path:
+            return
+
+        try:
+            config_data = json.loads(
+                Path(path).read_text(encoding="utf-8")
+            )
+
+            if not isinstance(config_data, dict):
+                raise ValueError("配置文件的顶层内容必须是 JSON 对象。")
+
+            tasks = config_data.get("tasks")
+
+            if not isinstance(tasks, list):
+                raise ValueError("配置文件中缺少有效的 tasks 列表。")
+
+            loop_data = config_data.get("loop", {})
+            round_wait_data = config_data.get("round_wait", {})
+
+            infinite_loop = bool(loop_data.get("infinite", True))
+            loop_count = int(loop_data.get("count", 1))
+
+            round_wait_type = str(
+                round_wait_data.get("type", "固定")
+            )
+            round_wait_min = int(
+                round_wait_data.get("min", 0)
+            )
+            round_wait_max = int(
+                round_wait_data.get("max", round_wait_min)
+            )
+
+            if round_wait_type not in ("固定", "随机"):
+                round_wait_type = "固定"
+
+            self.table.setRowCount(0)
+
+            self.infinite_loop_checkbox.setChecked(infinite_loop)
+            self.loop_count_spinbox.setValue(max(1, loop_count))
+
+            self.round_wait_type_combo.setCurrentText(
+                round_wait_type
+            )
+            self.round_wait_min_spinbox.setValue(
+                max(0, round_wait_min)
+            )
+            self.round_wait_max_spinbox.setValue(
+                max(0, round_wait_max)
+            )
+
+            for task in tasks:
+                if not isinstance(task, dict):
+                    continue
+
+                script_path = str(task.get("script", "")).strip()
+
+                if not script_path:
+                    continue
+
+                wait_type = str(task.get("wait_type", "固定"))
+                failure_action = str(
+                    task.get("failure_action", "停止")
+                )
+
+                if wait_type not in ("固定", "随机"):
+                    wait_type = "固定"
+
+                if failure_action not in ("停止", "重试", "跳过"):
+                    failure_action = "停止"
+
+                self.add_task_row(
+                    script_path=script_path,
+                    times=max(1, int(task.get("times", 1))),
+                    enabled=bool(task.get("enabled", True)),
+                    wait_type=wait_type,
+                    wait_min=max(0, int(task.get("wait_min", 0))),
+                    wait_max=max(0, int(task.get("wait_max", 0))),
+                    failure_action=failure_action,
+                    max_retry=max(0, int(task.get("max_retry", 0))),
+                    note=str(task.get("note", "")),
+                )
+
+            if self.table.rowCount() > 0:
+                self.table.selectRow(0)
+
             self.config_path_edit.setText(path)
-            self.status_label.setText("状态：已选择配置文件（尚未读取）")
+            self.status_label.setText("状态：任务配置已载入")
+            self._update_button_states()
+
+            QMessageBox.information(
+                self,
+                "载入成功",
+                f"已载入 {self.table.rowCount()} 个任务。",
+            )
+
+        except (
+            OSError,
+            json.JSONDecodeError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            QMessageBox.critical(
+                self,
+                "载入失败",
+                f"无法载入任务配置：\n\n{exc}",
+            )
 
 
 if __name__ == "__main__":
