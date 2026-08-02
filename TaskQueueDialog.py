@@ -9,6 +9,7 @@ import json
 
 from pathlib import Path
 from PySide6.QtCore import Qt
+from QueueRunner import QueueRunner
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -51,7 +52,11 @@ class TaskQueueDialog(QDialog):
         self.setMinimumSize(980, 600)
 
         self._build_ui()
+
+        self.runner = QueueRunner(self)
+
         self._connect_signals()
+        self._connect_runner_signals()
         self._update_button_states()
 
     def _build_ui(self):
@@ -226,7 +231,10 @@ class TaskQueueDialog(QDialog):
         # UI-only placeholders. Real save/load/run logic will be added later.
         self.save_button.clicked.connect(self._save_config)
         self.load_button.clicked.connect(self._load_config)
-        self.start_button.clicked.connect(self._preview_queue)
+        self.start_button.clicked.connect(self._start_queue_simulation)
+        self.pause_button.clicked.connect(self.runner.pause)
+        self.resume_button.clicked.connect(self.runner.resume)
+        self.stop_button.clicked.connect(self.runner.stop)
 
     def _choose_scripts(self):
         paths, _ = QFileDialog.getOpenFileNames(
@@ -700,6 +708,172 @@ class TaskQueueDialog(QDialog):
             f"状态：预检查通过，共 {len(tasks)} 个任务，"
             f"每轮 {total_runs} 次"
         )
+        
+    def _connect_runner_signals(self):
+        """Connect QueueRunner signals to the task queue UI."""
+        self.runner.started.connect(self._on_runner_started)
+        self.runner.paused.connect(self._on_runner_paused)
+        self.runner.resumed.connect(self._on_runner_resumed)
+        self.runner.stopped.connect(self._on_runner_stopped)
+        self.runner.finished.connect(self._on_runner_finished)
+
+        self.runner.status_changed.connect(
+            self._on_runner_status_changed
+        )
+        self.runner.progress_changed.connect(
+            self._on_runner_progress_changed
+        )
+        self.runner.error_occurred.connect(
+            self._on_runner_error
+        )
+        
+    def _start_queue_simulation(self):
+        """
+        Validate the task queue and start the simulated runner.
+
+        This version does not operate the mouse or keyboard.
+        """
+        tasks = self._get_enabled_tasks()
+
+        if not tasks:
+            QMessageBox.warning(
+                self,
+                "无法开始",
+                "任务队列中没有已启用的 Script。",
+            )
+            self.status_label.setText("状态：没有已启用任务")
+            return
+
+        missing_scripts = []
+
+        for task in tasks:
+            script_path = Path(task["script"])
+
+            if not script_path.is_file():
+                missing_scripts.append(str(script_path))
+
+        if missing_scripts:
+            missing_text = "\n".join(missing_scripts[:10])
+
+            if len(missing_scripts) > 10:
+                missing_text += (
+                    f"\n……另外还有 "
+                    f"{len(missing_scripts) - 10} 个文件"
+                )
+
+            QMessageBox.critical(
+                self,
+                "Script 文件不存在",
+                "以下 Script 文件无法找到：\n\n"
+                f"{missing_text}",
+            )
+            self.status_label.setText(
+                "状态：部分 Script 文件不存在"
+            )
+            return
+
+        try:
+            self.runner.configure(
+                tasks=tasks,
+                infinite_loop=self.infinite_loop_checkbox.isChecked(),
+                total_rounds=self.loop_count_spinbox.value(),
+            )
+
+            self.runner.start()
+
+        except (TypeError, ValueError, RuntimeError) as exc:
+            QMessageBox.critical(
+                self,
+                "无法开始",
+                f"任务队列配置错误：\n\n{exc}",
+            )
+            
+    def _set_runner_button_state(self, state):
+        """
+        Set control button availability.
+
+        Possible states:
+        idle, running, paused
+        """
+        if state == "running":
+            self.start_button.setEnabled(False)
+            self.pause_button.setEnabled(True)
+            self.resume_button.setEnabled(False)
+            self.stop_button.setEnabled(True)
+
+        elif state == "paused":
+            self.start_button.setEnabled(False)
+            self.pause_button.setEnabled(False)
+            self.resume_button.setEnabled(True)
+            self.stop_button.setEnabled(True)
+
+        else:
+            self.start_button.setEnabled(True)
+            self.pause_button.setEnabled(False)
+            self.resume_button.setEnabled(False)
+            self.stop_button.setEnabled(False)
+
+    def _on_runner_started(self):
+        self._set_runner_button_state("running")
+        self.status_label.setText("状态：模拟任务开始")
+
+    def _on_runner_paused(self):
+        self._set_runner_button_state("paused")
+        self.status_label.setText("状态：已暂停")
+
+    def _on_runner_resumed(self):
+        self._set_runner_button_state("running")
+        self.status_label.setText("状态：继续运行")
+
+    def _on_runner_stopped(self):
+        self._set_runner_button_state("idle")
+        self.status_label.setText("状态：已停止")
+
+    def _on_runner_finished(self):
+        self._set_runner_button_state("idle")
+        self.status_label.setText("状态：全部任务模拟完成")
+
+    def _on_runner_status_changed(self, status):
+        self.status_label.setText(f"状态：{status}")
+
+    def _on_runner_progress_changed(
+        self,
+        current_round,
+        total_rounds,
+        current_task,
+        total_tasks,
+        script_path,
+        current_run,
+        total_runs,
+    ):
+        script_name = Path(script_path).name
+
+        if total_rounds == 0:
+            round_text = f"第 {current_round} 轮（无限循环）"
+        else:
+            round_text = f"第 {current_round}/{total_rounds} 轮"
+
+        self.status_label.setText(
+            f"状态：{round_text} ｜ "
+            f"任务 {current_task}/{total_tasks} ｜ "
+            f"{script_name} ｜ "
+            f"次数 {current_run}/{total_runs}"
+        )
+
+    def _on_runner_error(self, message):
+        self._set_runner_button_state("idle")
+
+        QMessageBox.critical(
+            self,
+            "任务执行错误",
+            message,
+        )
+        
+    def closeEvent(self, event):
+        if self.runner.is_running:
+            self.runner.stop()
+
+        event.accept()
 
 
 if __name__ == "__main__":
