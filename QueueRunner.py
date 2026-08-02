@@ -12,9 +12,11 @@ KeymouseGo Pro - Real Queue Runner
 
 from __future__ import annotations
 
+import random
+from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QObject, Signal, Slot
+from PySide6.QtCore import QObject, QTimer, Signal, Slot
 
 from Util.RunScriptClass import QueueScriptRunner
 
@@ -76,6 +78,17 @@ class QueueRunner(QObject):
 
         self._worker_success = False
         self._worker_message = ""
+        
+        # Script 完成后的等待计时器。
+        # 使用短间隔计时，等待期间仍然可以暂停或停止。
+        self._wait_timer = QTimer(self)
+        self._wait_timer.setInterval(100)
+        self._wait_timer.timeout.connect(
+            self._on_wait_timer_tick
+        )
+
+        self._wait_remaining_ms = 0
+        self._waiting_after_task = False
 
     @property
     def is_running(self) -> bool:
@@ -171,6 +184,10 @@ class QueueRunner(QObject):
         self._task_index = 0
         self._retry_count = 0
 
+        self._wait_timer.stop()
+        self._wait_remaining_ms = 0
+        self._waiting_after_task = False
+        
         self._running = True
         self._paused = False
         self._stop_requested = False
@@ -228,6 +245,10 @@ class QueueRunner(QObject):
 
         self._stop_requested = True
         self._paused = False
+        
+        self._wait_timer.stop()
+        self._wait_remaining_ms = 0
+        self._waiting_after_task = False
 
         self.status_changed.emit(
             "正在停止任务队列……"
@@ -425,9 +446,119 @@ class QueueRunner(QObject):
             self._start_current_task()
             return
 
-        self._handle_task_failure(
+    def _get_task_wait_seconds(
+        self,
+        task: dict[str, Any],
+    ) -> int:
+        """计算当前任务完成后需要等待多少秒。"""
+        wait_type = str(
+            task.get(
+                "wait_type",
+                "固定",
+            )
+        )
+
+        wait_min = max(
+            0,
+            int(
+                task.get(
+                    "wait_min",
+                    0,
+                )
+            ),
+        )
+
+        wait_max = max(
+            0,
+            int(
+                task.get(
+                    "wait_max",
+                    wait_min,
+                )
+            ),
+        )
+
+        if wait_type == "随机":
+            # 防止用户把最大值设得比最小值小。
+            low = min(wait_min, wait_max)
+            high = max(wait_min, wait_max)
+
+            return random.randint(
+                low,
+                high,
+            )
+
+        # 固定等待使用“最少秒数”这一栏。
+        return wait_min
+
+    def _begin_task_wait(
+        self,
+        task: dict[str, Any],
+    ) -> None:
+        """在当前 Script 完成后开始等待。"""
+        wait_seconds = self._get_task_wait_seconds(
             task
         )
+
+        if wait_seconds <= 0:
+            self._advance_to_next_task()
+            return
+
+        self._wait_remaining_ms = (
+            wait_seconds * 1000
+        )
+        self._waiting_after_task = True
+
+        script_name = Path(
+            task["script"]
+        ).name
+
+        self.status_changed.emit(
+            f"{script_name} 已完成，"
+            f"等待 {wait_seconds} 秒后执行下一任务"
+        )
+
+        self._wait_timer.start()
+
+    @Slot()
+    def _on_wait_timer_tick(self) -> None:
+        """处理 Script 完成后的等待倒计时。"""
+        if not self._running:
+            self._wait_timer.stop()
+            return
+
+        if self._stop_requested:
+            self._wait_timer.stop()
+            self._wait_remaining_ms = 0
+            self._waiting_after_task = False
+            self._finish_as_stopped()
+            return
+
+        # 暂停期间不扣减剩余等待时间。
+        if self._paused:
+            return
+
+        self._wait_remaining_ms -= (
+            self._wait_timer.interval()
+        )
+
+        if self._wait_remaining_ms > 0:
+            return
+
+        self._wait_timer.stop()
+        self._wait_remaining_ms = 0
+        self._waiting_after_task = False
+
+        self._advance_to_next_task()
+
+    def _advance_to_next_task(self) -> None:
+        """进入当前轮的下一个任务。"""
+        if self._stop_requested:
+            self._finish_as_stopped()
+            return
+
+        self._task_index += 1
+        self._start_current_task()
 
     def _handle_task_failure(
         self,
@@ -514,6 +645,10 @@ class QueueRunner(QObject):
 
     def _finish_normally(self) -> None:
         """全部任务正常完成。"""
+        self._wait_timer.stop()
+        self._wait_remaining_ms = 0
+        self._waiting_after_task = False
+        
         self._running = False
         self._paused = False
         self._stop_requested = False
@@ -528,6 +663,10 @@ class QueueRunner(QObject):
 
     def _finish_as_stopped(self) -> None:
         """任务被用户停止或发生错误。"""
+        self._wait_timer.stop()
+        self._wait_remaining_ms = 0
+        self._waiting_after_task = False
+        
         self._running = False
         self._paused = False
         self._stop_requested = False

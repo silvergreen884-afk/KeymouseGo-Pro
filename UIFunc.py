@@ -52,6 +52,8 @@ def get_assets_path(*paths):
         root = os.getcwd()
     return os.path.join(root, 'assets', *paths)
 
+APP_NAME = "KeymouseGo Pro"
+APP_VERSION = "0.1.0"
 
 scripts = []
 scripts_map = {'current_index': 0, 'choice_language': '简体中文'}
@@ -83,6 +85,10 @@ class UIFunc(QMainWindow, Ui_UIView, QtStyleTools):
         logger.info('assets root:{0}'.format(get_assets_path()))
 
         self.setupUi(self)
+        
+        self.setWindowTitle(
+            f"{APP_NAME} v{APP_VERSION}"
+        )        
 
         # KeymouseGo Pro: add a task queue entry without changing generated UIView.py.
         self.bt_task_queue = QPushButton("任务队列", self.horizontalLayoutWidget)
@@ -152,6 +158,7 @@ class UIFunc(QMainWindow, Ui_UIView, QtStyleTools):
 
         # For better thread control
         self.runthread = None
+        self.task_queue_dialog = None
 
         self.btrun.clicked.connect(self.OnBtrunButton)
         self.btrecord.clicked.connect(self.OnBtrecordButton)
@@ -196,6 +203,13 @@ class UIFunc(QMainWindow, Ui_UIView, QtStyleTools):
             record_name = self.hotkey_record.text()
 
             if key_name == start_name:
+                if self._handle_task_queue_start_hotkey():
+                    logger.debug(
+                        '{0} task queue start/pause/resume'.format(
+                            key_name
+                        )
+                    )
+                    return True
                 if self.state == State.IDLE:
                     logger.debug('{0} host start'.format(key_name))
                     self.OnBtrunButton()
@@ -210,6 +224,13 @@ class UIFunc(QMainWindow, Ui_UIView, QtStyleTools):
                     logger.debug('{0} host resume'.format(key_name))
                     self.update_state(State.RUNNING)
             elif key_name == stop_name:
+                if self._handle_task_queue_stop_hotkey():
+                    logger.debug(
+                        '{0} task queue stop'.format(
+                            key_name
+                        )
+                    )
+                    return True
                 if self.state == State.RUNNING or self.state == State.PAUSE_RUNNING:
                     logger.info('Script stop')
                     self.tnumrd.setText('broken')
@@ -281,9 +302,74 @@ class UIFunc(QMainWindow, Ui_UIView, QtStyleTools):
         Recorder.set_interval(self.mouse_move_interval_ms.value())
 
     def OnTaskQueueButton(self):
-        """Open the KeymouseGo Pro task queue configuration window."""
-        dialog = TaskQueueDialog(self)
-        dialog.exec()
+        """Open the KeymouseGo Pro task queue window."""
+        if (
+            hasattr(self, "task_queue_dialog")
+            and self.task_queue_dialog is not None
+            and self.task_queue_dialog.isVisible()
+        ):
+            self.task_queue_dialog.raise_()
+            self.task_queue_dialog.activateWindow()
+            return
+
+        self.task_queue_dialog = TaskQueueDialog(self)
+
+        self.task_queue_dialog.setWindowTitle(
+            f"{APP_NAME} v{APP_VERSION} - 任务队列"
+        )
+
+        self.task_queue_dialog.finished.connect(
+            self._on_task_queue_dialog_closed
+        )
+
+        self.task_queue_dialog.show()
+        
+    def _on_task_queue_dialog_closed(self):
+        """Clear the saved task queue window reference."""
+        self.task_queue_dialog = None
+        
+    def _task_queue_is_open(self):
+        """Return True when the task queue window is open."""
+        return (
+            self.task_queue_dialog is not None
+            and self.task_queue_dialog.isVisible()
+        )
+        
+    def _handle_task_queue_start_hotkey(self):
+        """
+        F6 behavior for the task queue:
+
+        idle    -> start
+        running -> pause
+        paused  -> resume
+        """
+        if not self._task_queue_is_open():
+            return False
+
+        dialog = self.task_queue_dialog
+
+        if dialog.runner.is_running:
+            if dialog.runner.is_paused:
+                dialog.resume_button.click()
+            else:
+                dialog.pause_button.click()
+        else:
+            dialog.start_button.click()
+
+        return True
+        
+    def _handle_task_queue_stop_hotkey(self):
+        """Stop the task queue with the configured stop hotkey."""
+        if not self._task_queue_is_open():
+            return False
+
+        dialog = self.task_queue_dialog
+
+        if dialog.runner.is_running:
+            dialog.stop_button.click()
+            return True
+
+        return False
 
     def eventFilter(self, watched, event: QEvent):
         et: QEvent.Type = event.type()
