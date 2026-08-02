@@ -13,7 +13,7 @@ import Recorder
 from PySide6.QtGui import QTextCursor
 from qt_material import list_themes, QtStyleTools
 from PySide6.QtCore import *
-from PySide6.QtWidgets import QMainWindow, QApplication, QMessageBox
+from PySide6.QtWidgets import QMainWindow, QApplication, QMessageBox, QPushButton
 from PySide6.QtMultimedia import QSoundEffect
 from loguru import logger
 
@@ -25,6 +25,7 @@ from KeymouseGo import to_abs_path
 from Util.RunScriptClass import RunScriptClass
 from Util.Global import State
 from Util.ClickedLabel import Label
+from TaskQueueDialog import TaskQueueDialog
 
 
 os.environ['QT_ENABLE_HIGHDPI_SCALING'] = "1"
@@ -82,6 +83,12 @@ class UIFunc(QMainWindow, Ui_UIView, QtStyleTools):
         logger.info('assets root:{0}'.format(get_assets_path()))
 
         self.setupUi(self)
+
+        # KeymouseGo Pro: add a task queue entry without changing generated UIView.py.
+        self.bt_task_queue = QPushButton("任务队列", self.horizontalLayoutWidget)
+        self.bt_task_queue.setObjectName("bt_task_queue")
+        self.horizontalLayout.addWidget(self.bt_task_queue)
+        self.bt_task_queue.clicked.connect(self.OnTaskQueueButton)
 
         self.app = app
 
@@ -272,6 +279,11 @@ class UIFunc(QMainWindow, Ui_UIView, QtStyleTools):
         Recorder.set_callback(on_record_event)
         Recorder.set_cursor_pose_change(self.cursor_pos_change)
         Recorder.set_interval(self.mouse_move_interval_ms.value())
+
+    def OnTaskQueueButton(self):
+        """Open the KeymouseGo Pro task queue configuration window."""
+        dialog = TaskQueueDialog(self)
+        dialog.exec()
 
     def eventFilter(self, watched, event: QEvent):
         et: QEvent.Type = event.type()
