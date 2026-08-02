@@ -226,6 +226,7 @@ class TaskQueueDialog(QDialog):
         # UI-only placeholders. Real save/load/run logic will be added later.
         self.save_button.clicked.connect(self._save_config)
         self.load_button.clicked.connect(self._load_config)
+        self.start_button.clicked.connect(self._preview_queue)
 
     def _choose_scripts(self):
         paths, _ = QFileDialog.getOpenFileNames(
@@ -433,6 +434,20 @@ class TaskQueueDialog(QDialog):
     def _on_round_wait_type_changed(self, wait_type):
         self.round_wait_max_spinbox.setEnabled(wait_type == "随机")
 
+    def _get_enabled_tasks(self):
+        """Return enabled tasks in their current table order."""
+        tasks = []
+
+        for row in range(self.table.rowCount()):
+            task = self._read_row(row)
+
+            if not task["enabled"]:
+                continue
+
+            tasks.append(task)
+
+        return tasks
+
     def _get_config_data(self):
         """Collect the current task queue settings into a serializable dict."""
         tasks = []
@@ -611,6 +626,80 @@ class TaskQueueDialog(QDialog):
                 "载入失败",
                 f"无法载入任务配置：\n\n{exc}",
             )
+            
+    def _preview_queue(self):
+        """
+        First Queue Runner milestone:
+        validate and preview the enabled queue without executing scripts.
+        """
+        tasks = self._get_enabled_tasks()
+
+        if not tasks:
+            QMessageBox.warning(
+                self,
+                "无法开始",
+                "任务队列中没有已启用的 Script。",
+            )
+            self.status_label.setText("状态：没有已启用任务")
+            return
+
+        missing_scripts = []
+
+        for task in tasks:
+            script_path = Path(task["script"])
+
+            if not script_path.is_file():
+                missing_scripts.append(str(script_path))
+
+        if missing_scripts:
+            missing_text = "\n".join(missing_scripts[:10])
+
+            if len(missing_scripts) > 10:
+                missing_text += f"\n……另外还有 {len(missing_scripts) - 10} 个文件"
+
+            QMessageBox.critical(
+                self,
+                "Script 文件不存在",
+                "以下 Script 文件无法找到：\n\n"
+                f"{missing_text}\n\n"
+                "请重新添加 Script，或载入正确的任务配置。",
+            )
+            self.status_label.setText("状态：部分 Script 文件不存在")
+            return
+
+        total_runs = sum(task["times"] for task in tasks)
+
+        preview_lines = []
+
+        for index, task in enumerate(tasks, start=1):
+            script_name = Path(task["script"]).name
+
+            preview_lines.append(
+                f"{index}. {script_name} × {task['times']}"
+            )
+
+        loop_description = (
+            "无限循环"
+            if self.infinite_loop_checkbox.isChecked()
+            else f"{self.loop_count_spinbox.value()} 轮"
+        )
+
+        preview = "\n".join(preview_lines)
+
+        QMessageBox.information(
+            self,
+            "任务队列预检查通过",
+            f"已启用任务：{len(tasks)} 个\n"
+            f"每轮总执行次数：{total_runs}\n"
+            f"循环设置：{loop_description}\n\n"
+            f"执行顺序：\n{preview}\n\n"
+            "当前测试版本只检查任务，不会真正执行 Script。",
+        )
+
+        self.status_label.setText(
+            f"状态：预检查通过，共 {len(tasks)} 个任务，"
+            f"每轮 {total_runs} 次"
+        )
 
 
 if __name__ == "__main__":
