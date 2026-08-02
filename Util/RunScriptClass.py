@@ -192,6 +192,234 @@ class RunScriptClass(QThread, RunScriptMeta):
         return json_object.next_object
 
 
+class QueueScriptRunner(QThread, RunScriptMeta):
+    """
+    Run one Script for the task queue.
+
+    This class is independent from the original main-window runner.
+    It accepts a Script path and run count directly.
+    """
+
+    logSignal: Signal = Signal(str)
+    progressSignal: Signal = Signal(int, int)
+    completedSignal: Signal = Signal(bool, str)
+
+    def __init__(
+        self,
+        script_path: str,
+        run_times: int = 1,
+        parent=None,
+    ):
+        super().__init__(parent)
+
+        self.script_path = str(script_path)
+        self.run_times = max(1, int(run_times))
+
+        self._paused = False
+        self._stop_requested = False
+
+    def set_pause(self):
+        """Pause after the current event reaches a safe stopping point."""
+        self._paused = True
+
+    def resume(self):
+        """Continue a paused Script."""
+        self._paused = False
+        RunScriptMeta.resume(self)
+
+    def request_stop(self):
+        """Request the Script to stop as soon as possible."""
+        self._stop_requested = True
+        self._paused = False
+
+        # Wake the thread if it is paused or sleeping.
+        RunScriptMeta.resume(self)
+
+    def wait_if_pause(self):
+        """Wait while the runner is paused."""
+        if self._paused and not self._stop_requested:
+            self.pause()
+
+    def run(self):
+        """QThread entry point."""
+        success = False
+        message = ""
+
+        try:
+            self._run_script()
+            success = not self._stop_requested
+
+            if self._stop_requested:
+                message = "Script 已停止"
+            else:
+                message = "Script 执行完成"
+
+        except Exception as exc:
+            logger.error(
+                "Queue Script run error: {0}".format(exc)
+            )
+            traceback.print_exc()
+
+            message = str(exc)
+            self.logSignal.emit(
+                "任务队列执行 Script 时发生错误：{0}".format(exc)
+            )
+
+        finally:
+            self.completedSignal.emit(success, message)
+
+    def _parse_script(self, script_path: str):
+        """Parse JSON5 or legacy KeymouseGo Script."""
+        try:
+            return ScriptParser.parse(script_path)
+
+        except Exception:
+            logger.warning(
+                "Failed to parse queue Script with JSON5 parser, "
+                "trying legacy parser"
+            )
+
+            return LegacyParser.parse(script_path)
+
+    def _run_script(self):
+        """Parse and run the configured Script."""
+        if not self.script_path:
+            raise ValueError("Script 路径为空。")
+
+        logger.info(
+            "Queue Script path: {0}".format(self.script_path)
+        )
+
+        head_object = self._parse_script(self.script_path)
+
+        current_run = 0
+
+        while (
+            current_run < self.run_times
+            and not self._stop_requested
+        ):
+            self.wait_if_pause()
+
+            if self._stop_requested:
+                break
+
+            self.progressSignal.emit(
+                current_run + 1,
+                self.run_times,
+            )
+
+            completed = self._run_script_from_objects(
+                head_object
+            )
+
+            if not completed:
+                break
+
+            current_run += 1
+
+    def _run_script_from_objects(
+        self,
+        head_object: JsonObject,
+        attach: List[str] = None,
+    ):
+        """Execute all objects in one Script run."""
+        current_object = head_object
+
+        while current_object is not None:
+            self.wait_if_pause()
+
+            if self._stop_requested:
+                return False
+
+            if attach:
+                try:
+                    PluginManager.call_group(
+                        attach,
+                        current_object,
+                    )
+
+                except Exception as exc:
+                    logger.error(exc)
+                    self.logSignal.emit(
+                        "调用插件组 {0} 时发生错误：{1}".format(
+                            attach,
+                            exc,
+                        )
+                    )
+                    raise
+
+            current_object = self._run_object(
+                current_object
+            )
+
+        return not self._stop_requested
+
+    def _run_object(self, json_object: JsonObject):
+        """Execute one parsed KeymouseGo object."""
+        object_type = json_object.content.get(
+            "type",
+            None,
+        )
+
+        call_group = json_object.content.get(
+            "call",
+            None,
+        )
+
+        if call_group:
+            PluginManager.call_group(
+                call_group,
+                json_object,
+            )
+
+        if object_type == "event":
+            event = ScriptEvent(json_object.content)
+
+            self.logSignal.emit(str(event))
+            logger.debug(str(event))
+
+            event.execute(self)
+
+        elif object_type == "sequence":
+            self._run_script_from_objects(
+                json_object.content["events"],
+                json_object.content["attach"],
+            )
+
+        elif object_type == "if":
+            result = PluginManager.call(
+                json_object.content["judge"],
+                json_object,
+            )
+
+            if result:
+                return json_object.next_object
+
+            return json_object.next_object_if_false
+
+        elif object_type in ["goto", "custom"]:
+            pass
+
+        elif object_type == "subroutine":
+            for path in json_object.content["path"]:
+                if self._stop_requested:
+                    break
+
+                subroutine_head = self._parse_script(path)
+
+                self._run_script_from_objects(
+                    subroutine_head
+                )
+
+        else:
+            logger.error(
+                "Unexpected event type when running {0}".format(
+                    json_object.content
+                )
+            )
+
+        return json_object.next_object
+
 @dataclass
 class StopFlag:
     value: bool
