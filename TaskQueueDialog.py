@@ -6,6 +6,7 @@ This module only defines the task queue window.
 It does not yet execute scripts or modify the original KeymouseGo behavior.
 """
 
+from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -256,7 +257,10 @@ class TaskQueueDialog(QDialog):
         enabled_item.setCheckState(Qt.Checked if enabled else Qt.Unchecked)
         self.table.setItem(row, self.COLUMN_ENABLED, enabled_item)
 
-        script_item = QTableWidgetItem(str(script_path))
+        full_path = str(script_path)
+        script_item = QTableWidgetItem(Path(full_path).name)
+        script_item.setData(Qt.UserRole, full_path)
+        script_item.setToolTip(full_path)
         self.table.setItem(row, self.COLUMN_SCRIPT, script_item)
 
         times_spinbox = QSpinBox()
@@ -327,7 +331,8 @@ class TaskQueueDialog(QDialog):
             return
 
         enabled = self.table.item(row, self.COLUMN_ENABLED).checkState() == Qt.Checked
-        script = self.table.item(row, self.COLUMN_SCRIPT).text()
+        script_item = self.table.item(row, self.COLUMN_SCRIPT)
+        script = script_item.data(Qt.UserRole) or script_item.text()
         times = self.table.cellWidget(row, self.COLUMN_TIMES).value()
         wait_type = self.table.cellWidget(row, self.COLUMN_WAIT_TYPE).currentText()
         wait_min = self.table.cellWidget(row, self.COLUMN_WAIT_MIN).value()
@@ -370,7 +375,10 @@ class TaskQueueDialog(QDialog):
         return {
             "enabled": self.table.item(row, self.COLUMN_ENABLED).checkState()
             == Qt.Checked,
-            "script": self.table.item(row, self.COLUMN_SCRIPT).text(),
+            "script": (
+            self.table.item(row, self.COLUMN_SCRIPT).data(Qt.UserRole)
+            or self.table.item(row, self.COLUMN_SCRIPT).text()
+            ),
             "times": self.table.cellWidget(row, self.COLUMN_TIMES).value(),
             "wait_type": self.table.cellWidget(
                 row, self.COLUMN_WAIT_TYPE
@@ -388,7 +396,11 @@ class TaskQueueDialog(QDialog):
         self.table.item(row, self.COLUMN_ENABLED).setCheckState(
             Qt.Checked if data["enabled"] else Qt.Unchecked
         )
-        self.table.item(row, self.COLUMN_SCRIPT).setText(data["script"])
+        script_item = self.table.item(row, self.COLUMN_SCRIPT)
+        full_path = str(data["script"])
+        script_item.setText(Path(full_path).name)
+        script_item.setData(Qt.UserRole, full_path)
+        script_item.setToolTip(full_path)
         self.table.cellWidget(row, self.COLUMN_TIMES).setValue(data["times"])
         self.table.cellWidget(row, self.COLUMN_WAIT_TYPE).setCurrentText(
             data["wait_type"]
