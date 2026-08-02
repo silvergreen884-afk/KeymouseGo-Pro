@@ -441,9 +441,11 @@ class QueueRunner(QObject):
             )
 
             self._retry_count = 0
-            self._task_index += 1
 
-            self._start_current_task()
+            # 不要立即开始下一项，
+            # 先进入等待流程。
+            self._begin_task_wait(task)
+
             return
 
     def _get_task_wait_seconds(
