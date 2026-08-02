@@ -218,6 +218,15 @@ class QueueScriptRunner(QThread, RunScriptMeta):
         self._paused = False
         self._stop_requested = False
 
+    def sleep(self, msecs: int):
+        """
+        Sleep using milliseconds and allow pause/stop to wake the thread.
+
+        QThread.sleep() uses seconds, but KeymouseGo Script delays
+        are stored in milliseconds.
+        """
+        RunScriptMeta.sleep(self, msecs)
+        
     def set_pause(self):
         """Pause after the current event reaches a safe stopping point."""
         self._paused = True
