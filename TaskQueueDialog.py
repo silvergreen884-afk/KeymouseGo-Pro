@@ -54,6 +54,7 @@ class TaskQueueDialog(QDialog):
         self._build_ui()
 
         self.runner = QueueRunner(self)
+        self._last_progress_text = ""
 
         self._connect_signals()
         self._connect_runner_signals()
@@ -819,19 +820,33 @@ class TaskQueueDialog(QDialog):
 
     def _on_runner_paused(self):
         self._set_runner_button_state("paused")
-        self.status_label.setText("状态：已暂停")
+
+        if self._last_progress_text:
+            self.status_label.setText(
+                f"状态：已暂停 ｜ {self._last_progress_text}"
+            )
+        else:
+            self.status_label.setText("状态：已暂停")
 
     def _on_runner_resumed(self):
         self._set_runner_button_state("running")
-        self.status_label.setText("状态：继续运行")
+
+        if self._last_progress_text:
+            self.status_label.setText(
+                f"状态：继续运行 ｜ {self._last_progress_text}"
+            )
+        else:
+            self.status_label.setText("状态：继续运行")
 
     def _on_runner_stopped(self):
+        self._last_progress_text = ""
         self._set_runner_button_state("idle")
         self.status_label.setText("状态：已停止")
 
     def _on_runner_finished(self):
+        self._last_progress_text = ""
         self._set_runner_button_state("idle")
-        self.status_label.setText("状态：全部任务模拟完成")
+        self.status_label.setText("状态：全部任务执行完成")
 
     def _on_runner_status_changed(self, status):
         self.status_label.setText(f"状态：{status}")
@@ -853,11 +868,15 @@ class TaskQueueDialog(QDialog):
         else:
             round_text = f"第 {current_round}/{total_rounds} 轮"
 
-        self.status_label.setText(
-            f"状态：{round_text} ｜ "
+        self._last_progress_text = (
+            f"{round_text} ｜ "
             f"任务 {current_task}/{total_tasks} ｜ "
             f"{script_name} ｜ "
             f"次数 {current_run}/{total_runs}"
+        )
+
+        self.status_label.setText(
+            f"状态：{self._last_progress_text}"
         )
 
     def _on_runner_error(self, message):
